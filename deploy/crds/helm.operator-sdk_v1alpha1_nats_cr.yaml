@@ -1,0 +1,97 @@
+apiVersion: helm.operator-sdk/v1alpha1
+kind: Nats
+metadata:
+  name: example-nats
+spec:
+  # Default values copied from <project_dir>/helm-charts/nats/values.yaml
+  
+  antiAffinity: soft
+  auth:
+    enabled: true
+    user: nats_client
+  client:
+    service:
+      annotations: {}
+      port: 4222
+      type: ClusterIP
+  cluster:
+    service:
+      annotations: {}
+      port: 6222
+      type: ClusterIP
+  clusterAuth:
+    enabled: true
+    user: nats_cluster
+  debug:
+    enabled: false
+    logtime: false
+    trace: false
+  deployment:
+    updateType: RollingUpdate
+  extraArgs: []
+  image:
+    pullPolicy: IfNotPresent
+    registry: docker.io
+    repository: bitnami/nats
+    tag: 2.1.4-debian-10-r24
+  ingress:
+    enabled: false
+    hosts:
+    - annotations: null
+      name: nats.local
+      tls: false
+      tlsSecret: nats.local-tls
+    secrets: null
+  livenessProbe:
+    enabled: true
+    failureThreshold: 6
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 5
+  metrics:
+    args:
+    - -connz
+    - -routez
+    - -subz
+    - -varz
+    enabled: false
+    image:
+      pullPolicy: IfNotPresent
+      registry: docker.io
+      repository: bitnami/nats-exporter
+      tag: 0.6.0-debian-10-r28
+    podAnnotations:
+      prometheus.io/port: "7777"
+      prometheus.io/scrape: "true"
+    port: 7777
+  monitoring:
+    service:
+      annotations: {}
+      loadBalancerIP: null
+      port: 8222
+      type: ClusterIP
+  natsFilename: nats-server
+  networkPolicy:
+    allowExternal: true
+    enabled: false
+  podAnnotations: {}
+  podLabels: {}
+  readinessProbe:
+    enabled: true
+    failureThreshold: 6
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 5
+  replicaCount: 1
+  resourceType: statefulset
+  resources: {}
+  securityContext:
+    enabled: true
+    fsGroup: 1001
+    runAsUser: 1001
+  sidecars: null
+  statefulset:
+    updateStrategy: OnDelete
+  
