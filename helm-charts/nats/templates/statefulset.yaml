@@ -1,170 +1,338 @@
-{{- if or (eq .Values.resourceType "statefulset") (not (contains .Values.resourceType "deployment")) }}
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ template "nats.fullname" . }}
+  name: {{ template "nats.name" . }}
   labels:
-    app: "{{ template "nats.name" . }}"
-    chart: "{{ template "nats.chart" . }}"
-    release: {{ .Release.Name | quote }}
-    heritage: {{ .Release.Service | quote }}
+    app: {{ template "nats.name" . }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 spec:
-  serviceName: {{ template "nats.fullname" . }}-headless
-  replicas: {{ .Values.replicaCount }}
-  updateStrategy:
-    type: {{ .Values.statefulset.updateStrategy }}
-    {{- if (eq "Recreate" .Values.statefulset.updateStrategy) }}
-    rollingUpdate: null
-    {{- else }}
-    {{- if .Values.statefulset.rollingUpdatePartition }}
-    rollingUpdate:
-      partition: {{ .Values.statefulset.rollingUpdatePartition }}
-    {{- end }}
-    {{- end }}
   selector:
     matchLabels:
-      app: "{{ template "nats.name" . }}"
-      release: {{ .Release.Name | quote }}
+      app: {{ template "nats.name" . }}
+  {{- if .Values.cluster.enabled }}
+  replicas: {{ .Values.cluster.replicas }}
+  {{- else }}
+  replicas: 1
+  {{- end }}
+  serviceName: {{ template "nats.name" . }}
   template:
     metadata:
-      labels:
-        app: "{{ template "nats.name" . }}"
-        chart: "{{ template "nats.chart" . }}"
-        release: {{ .Release.Name | quote }}
-        {{- if .Values.podLabels }}
-{{ toYaml .Values.podLabels | indent 8 }}
-        {{- end }}
-{{- if or .Values.podAnnotations .Values.metrics.enabled }}
+      {{- if or .Values.podAnnotations .Values.exporter.enabled }}
       annotations:
-{{- if .Values.podAnnotations }}
-{{ toYaml .Values.podAnnotations | indent 8 }}
-{{- end }}
-{{- if .Values.metrics.podAnnotations }}
-{{ toYaml .Values.metrics.podAnnotations | indent 8 }}
-{{- end }}
-{{- end }}
+      {{- if .Values.exporter.enabled }}
+        prometheus.io/path: /metrics
+        prometheus.io/port: "7777"
+        prometheus.io/scrape: "true"
+      {{- end }}
+      {{- range $key, $value := .Values.podAnnotations }}
+        {{ $key }}: {{ $value | quote }}
+      {{- end }}
+      {{- end }}
+      labels:
+        app: {{ template "nats.name" . }}
+        chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
     spec:
-{{- include "nats.imagePullSecrets" . | indent 6 }}
-      {{- if .Values.securityContext.enabled }}
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{- toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.securityContext }}
       securityContext:
-        fsGroup: {{ .Values.securityContext.fsGroup }}
-        runAsUser: {{ .Values.securityContext.runAsUser }}
-      {{- end }}
-      {{- if .Values.priorityClassName }}
-      priorityClassName: {{ .Values.priorityClassName | quote }}
-      {{- end }}
-      {{- if .Values.nodeSelector }}
-      nodeSelector:
-{{ toYaml .Values.nodeSelector | indent 8 }}
-      {{- end }}
-      {{- if .Values.tolerations }}
-      tolerations:
-{{ toYaml .Values.tolerations | indent 8 }}
-      {{- end }}
-      {{- if .Values.schedulerName }}
-      schedulerName: {{ .Values.schedulerName | quote }}
-      {{- end }}
-      {{- if eq .Values.antiAffinity "hard" }}
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.affinity }}
       affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - topologyKey: "kubernetes.io/hostname"
-              labelSelector:
-                matchLabels:
-                  app: "{{ template "nats.name" . }}"
-                  release: {{ .Release.Name | quote }}
-      {{- else if eq .Values.antiAffinity "soft" }}
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 1
-            podAffinityTerm:
-              topologyKey: kubernetes.io/hostname
-              labelSelector:
-                matchLabels:
-                  app: "{{ template "nats.name" . }}"
-                  release: {{ .Release.Name | quote }}
+{{- toYaml  . | nindent 8 }}
+{{- end }}
+      # Common volumes for the containers.
+      volumes:
+      - name: config-volume
+        configMap:
+          name: {{ template "nats.name" . }}-config
+
+      # Local volume shared with the reloader.
+      - name: pid
+        emptyDir: {}
+
+      {{- if .Values.auth.enabled }}
+      {{- if eq .Values.auth.resolver.type "memory" }}
+      # Volume with the memory resolver configuration.
+      - name: resolver-volume
+        configMap:
+          name: {{ .Values.auth.resolver.configMap.name }}
       {{- end }}
-      containers:
-      - name: {{ template "nats.name" . }}
-        image: {{ template "nats.image" . }}
-        imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+      {{- if eq .Values.auth.resolver.type "URL" }}
+      - name: operator-jwt-volume
+        configMap:
+          name: {{ .Values.auth.operatorjwt.configMap.name }}
+      {{- end }}
+      {{- end }}
+
+      {{ if and .Values.nats.externalAccess .Values.nats.advertise }}
+      # Local volume shared with the advertise config initializer.
+      - name: advertiseconfig
+        emptyDir: {}
+      {{ end }}
+
+      #################
+      #               #
+      #  TLS Volumes  #
+      #               #
+      #################
+      {{- with .Values.nats.tls }}
+      {{ $secretName := .secret.name }}
+      - name: {{ $secretName }}-clients-volume
+        secret:
+          secretName: {{ $secretName }}
+      {{- end }}
+      {{- with .Values.cluster.tls }}
+      {{ $secretName := .secret.name }}
+      - name: {{ $secretName }}-cluster-volume
+        secret:
+          secretName: {{ $secretName }}
+      {{- end }}
+      {{- with .Values.leafnodes.tls }}
+      {{ $secretName := .secret.name }}
+      - name: {{ $secretName }}-leafnodes-volume
+        secret:
+          secretName: {{ $secretName }}
+      {{- end }}
+      {{- with .Values.gateway.tls }}
+      {{ $secretName := .secret.name }}
+      - name: {{ $secretName }}-gateways-volume
+        secret:
+          secretName: {{ $secretName }}
+      {{- end }}
+
+      {{- if .Values.leafnodes.enabled }}
+      # 
+      # Leafnode credential volumes
+      # 
+      {{- range .Values.leafnodes.remotes }}
+      {{- with .credentials }}
+      - name: {{ .secret.name }}-volume
+        secret:
+          secretName: {{ .secret.name }}
+      {{- end }}
+      {{- end }}
+      {{- end }}
+
+      {{ if and .Values.nats.externalAccess .Values.nats.advertise }}
+      # Assume that we only use the service account in case we want to
+      # figure out what is the current external public IP from the server
+      # in order to be able to advertise correctly.
+      serviceAccountName: {{ .Values.nats.serviceAccount }}
+      {{ end }}
+
+      # Required to be able to HUP signal and apply config
+      # reload to the server without restarting the pod.
+      shareProcessNamespace: true
+
+      {{- if and .Values.nats.externalAccess .Values.nats.advertise }}
+      # Initializer container required to be able to lookup
+      # the external ip on which this node is running.
+      initContainers:
+      - name: bootconfig
         command:
-        - {{ .Values.natsFilename }}
-        args:
-        - -c
-        - /opt/bitnami/nats/{{ .Values.natsFilename }}.conf
-        # to ensure nats could run with non-root user, we put the configuration
-        # file under `/opt/bitnami/nats/{{ .Values.natsFilename }}.conf`, please check the link below
-        # for the implementation inside Dockerfile:
-        # - https://github.com/bitnami/bitnami-docker-nats#configuration
-        {{- if .Values.extraArgs }}
-{{ toYaml .Values.extraArgs | indent 8 }}
-        {{- end }}
-        ports:
-        - name: client
-          containerPort: {{ .Values.client.service.port }}
-        - name: cluster
-          containerPort: {{ .Values.cluster.service.port }}
-        - name: monitoring
-          containerPort: {{ .Values.monitoring.service.port }}
-        {{- if .Values.livenessProbe.enabled }}
-        livenessProbe:
-          httpGet:
-            path: /
-            port: monitoring
-          initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
-          periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
-          timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
-          successThreshold: {{ .Values.livenessProbe.successThreshold }}
-          failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
-        {{- end }}
-        {{- if .Values.readinessProbe.enabled }}
-        readinessProbe:
-          httpGet:
-            path: /
-            port: monitoring
-          initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
-          periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
-          timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
-          successThreshold: {{ .Values.readinessProbe.successThreshold }}
-          failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
-        {{- end }}
-        resources:
-{{ toYaml .Values.resources | indent 10 }}
+        - nats-pod-bootconfig
+        - -f
+        - /etc/nats-config/advertise/client_advertise.conf
+        - -gf
+        - /etc/nats-config/advertise/gateway_advertise.conf
+        env:
+        - name: KUBERNETES_NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        image: {{ .Values.bootconfig.image }}
+        imagePullPolicy: {{ .Values.bootconfig.pullPolicy }}
         volumeMounts:
-          - name: config
-            mountPath: /opt/bitnami/nats/{{ .Values.natsFilename }}.conf
-            subPath: {{ .Values.natsFilename }}.conf
-        {{- if .Values.sidecars }}
-{{ toYaml .Values.sidecars | indent 6 }}
-        {{- end }}
-{{- if .Values.metrics.enabled }}
-      - name: metrics
-        image: {{ template "nats.metrics.image" . }}
-        imagePullPolicy: {{ .Values.metrics.image.pullPolicy | quote }}
-        args: {{- toYaml .Values.metrics.args | nindent 10 }}
-          - "http://localhost:{{ .Values.monitoring.service.port }}"
+        - mountPath: /etc/nats-config/advertise
+          name: advertiseconfig
+          subPath: advertise
+      {{- end }}
+
+      #################
+      #               #
+      #  NATS Server  #
+      #               #
+      #################
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: nats
+        image: {{ .Values.nats.image }}
+        imagePullPolicy: {{ .Values.nats.pullPolicy }}
         ports:
-        - name: metrics
-          containerPort: {{ .Values.metrics.port }}
+        - containerPort: 4222
+          name: client
+          {{- if .Values.nats.externalAccess }}
+          hostPort: 4222
+          {{- end }}
+        - containerPort: 7422
+          name: leafnodes
+          {{- if .Values.nats.externalAccess }}
+          hostPort: 7422
+          {{- end }}
+        - containerPort: 7522
+          name: gateways
+          {{- if .Values.nats.externalAccess }}
+          hostPort: 7522
+          {{- end }}
+        - containerPort: 6222
+          name: cluster
+        - containerPort: 8222
+          name: monitor
+        - containerPort: 7777
+          name: metrics
+        command:
+         - "nats-server"
+         - "--config"
+         - "/etc/nats-config/nats.conf"
+
+        # Required to be able to define an environment variable
+        # that refers to other environment variables.  This env var
+        # is later used as part of the configuration file.
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLUSTER_ADVERTISE
+          value: {{ template "nats.clusterAdvertise" . }}
+        volumeMounts:
+          - name: config-volume
+            mountPath: /etc/nats-config
+          - name: pid
+            mountPath: /var/run/nats
+          {{- if and .Values.nats.externalAccess .Values.nats.advertise }}
+          - mountPath: /etc/nats-config/advertise
+            name: advertiseconfig
+            subPath: advertise
+          {{- end }}
+
+          {{- if .Values.auth.enabled }}
+          {{- if eq .Values.auth.resolver.type "memory" }}
+          - name: resolver-volume
+            mountPath: /etc/nats-config/accounts
+          {{- end }}
+
+          {{- if eq .Values.auth.resolver.type "URL" }}
+          - name: operator-jwt-volume
+            mountPath: /etc/nats-config/operator
+          {{- end }}
+          {{- end }}
+
+          #######################
+          #                     #
+          #  TLS Volumes Mounts #
+          #                     #
+          #######################
+          {{- with .Values.nats.tls }}
+          {{ $secretName := .secret.name }}
+          - name: {{ $secretName }}-clients-volume
+            mountPath: /etc/nats-certs/clients/{{ $secretName }}
+          {{- end }}
+          {{- with .Values.cluster.tls }}
+          {{ $secretName := .secret.name }}
+          - name: {{ $secretName }}-cluster-volume
+            mountPath: /etc/nats-certs/cluster/{{ $secretName }}
+          {{- end }}
+          {{- with .Values.leafnodes.tls }}
+          {{ $secretName := .secret.name }}
+          - name: {{ $secretName }}-leafnodes-volume
+            mountPath: /etc/nats-certs/leafnodes/{{ $secretName }}
+          {{- end }}
+          {{- with .Values.gateway.tls }}
+          {{ $secretName := .secret.name }}
+          - name: {{ $secretName }}-gateways-volume
+            mountPath: /etc/nats-certs/gateways/{{ $secretName }}
+          {{- end }}
+
+          {{- if .Values.leafnodes.enabled }}
+          # 
+          # Leafnode credential volumes
+          # 
+          {{- range .Values.leafnodes.remotes }}
+          {{- with .credentials }}
+          - name: {{ .secret.name }}-volume
+            mountPath: /etc/nats-creds/{{ .secret.name }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+
+        # Liveness/Readiness probes against the monitoring.
+        #
         livenessProbe:
           httpGet:
-            path: /metrics
-            port: metrics
-          initialDelaySeconds: 15
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
           timeoutSeconds: 5
         readinessProbe:
           httpGet:
-            path: /metrics
-            port: metrics
-          initialDelaySeconds: 5
-          timeoutSeconds: 1
-        resources:
-{{ toYaml .Values.metrics.resources | indent 10 }}
-{{- end }}
-      volumes:
-      - name: config
-        configMap:
-          name: {{ template "nats.fullname" . }}
-{{- end }}
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+
+        # Gracefully stop NATS Server on pod deletion or image upgrade.
+        #
+        lifecycle:
+          preStop:
+            exec:
+              # Using the alpine based NATS image, we add an extra sleep that is
+              # the same amount as the terminationGracePeriodSeconds to allow
+              # the NATS Server to gracefully terminate the client connections.
+              #
+              command: ["/bin/sh", "-c", "nats-server -sl=ldm=/var/run/nats/nats.pid && /bin/sleep 60"]
+
+      #################################
+      #                               #
+      #  NATS Configuration Reloader  #
+      #                               #
+      #################################
+      {{ if .Values.reloader.enabled }}
+      - name: reloader
+        image: {{ .Values.reloader.image }}
+        imagePullPolicy: {{ .Values.reloader.pullPolicy }}
+        command:
+         - "nats-server-config-reloader"
+         - "-pid"
+         - "/var/run/nats/nats.pid"
+         - "-config"
+         - "/etc/nats-config/nats.conf"
+        volumeMounts:
+          - name: config-volume
+            mountPath: /etc/nats-config
+          - name: pid
+            mountPath: /var/run/nats
+      {{ end }}
+
+      ##############################
+      #                            #
+      #  NATS Prometheus Exporter  #
+      #                            #
+      ##############################
+      {{ if .Values.exporter.enabled }}
+      - name: metrics
+        image: {{ .Values.exporter.image }}
+        imagePullPolicy: {{ .Values.exporter.pullPolicy }}
+        args:
+        - -connz
+        - -routez
+        - -subz
+        - -varz
+        - -prefix=nats
+        - -use_internal_server_id
+        - http://localhost:8222/
+        ports:
+        - containerPort: 7777
+          name: metrics
+      {{ end }}
