@@ -16,7 +16,7 @@ spec:
       containers:
         - name: nats-operator
           # Replace this with the built image name
-          image: gcr.io/codelity-co/nats-operator:v0.3.0
+          image: gcr.io/codelity-co/nats-operator:v0.4.1
           imagePullPolicy: IfNotPresent
           env:
             - name: WATCH_NAMESPACE
